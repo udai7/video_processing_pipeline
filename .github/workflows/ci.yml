@@ -76,3 +76,25 @@ jobs:
         run: |
           npm install
           npm run build
+
+  # Deploy to the VPS only after tests pass, and only on pushes to main.
+  # The VPS has the repo cloned at ${{ secrets.VPS_APP_DIR }} with a prod .env
+  # in place (never committed). This SSHes in, pulls latest main, and rebuilds.
+  deploy:
+    needs: build-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+            cd ${{ secrets.VPS_APP_DIR }}
+            git fetch --all
+            git reset --hard origin/main
+            docker compose up -d --build --remove-orphans
+            docker image prune -f

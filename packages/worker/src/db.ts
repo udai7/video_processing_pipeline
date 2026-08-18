@@ -43,6 +43,54 @@ export async function deleteVideoRow(id: string): Promise<void> {
   await pool.query("DELETE FROM videos WHERE id = $1", [id]);
 }
 
+/**
+ * Mark a video failed from outside the pipeline, for jobs that died without
+ * their catch block running (crash, SIGKILL, stalled out of retries). Leaves
+ * videos that already reached a terminal state alone.
+ */
+export async function failVideo(videoId: string, message: string): Promise<boolean> {
+  const { rowCount } = await pool.query(
+    `UPDATE videos SET status = 'failed'
+      WHERE id = $1 AND status NOT IN ('completed', 'failed')`,
+    [videoId]
+  );
+  if (!rowCount) return false;
+  await pool.query(
+    `UPDATE jobs
+        SET error_message = $2, logs = logs || $3, updated_at = now()
+      WHERE video_id = $1`,
+    [videoId, message, `\n[error] ${message}\n`]
+  );
+  return true;
+}
+
+/**
+ * Fail videos left mid-pipeline with no job progress for `staleMinutes` — the
+ * case where the queue entry itself is gone (Redis wiped, job dropped) so no
+ * failure event will ever arrive. Returns the ids it reaped.
+ */
+export async function failStalledVideos(staleMinutes: number): Promise<string[]> {
+  const { rows } = await pool.query<{ id: string }>(
+    `WITH stalled AS (
+       SELECT v.id FROM videos v
+         JOIN jobs j ON j.video_id = v.id
+        WHERE v.status NOT IN ('completed', 'failed')
+          AND j.updated_at < now() - ($1 || ' minutes')::interval
+     ), marked AS (
+       UPDATE videos SET status = 'failed'
+        WHERE id IN (SELECT id FROM stalled) RETURNING id
+     )
+     UPDATE jobs
+        SET error_message = 'Processing stalled — no progress reported; marked failed.',
+            logs = logs || '\n[error] processing stalled; marked failed\n',
+            updated_at = now()
+      WHERE video_id IN (SELECT id FROM marked)
+     RETURNING video_id AS id`,
+    [String(staleMinutes)]
+  );
+  return rows.map((r) => r.id);
+}
+
 export async function setStatus(videoId: string, status: VideoStatus): Promise<void> {
   await pool.query("UPDATE videos SET status = $2 WHERE id = $1", [videoId, status]);
 }

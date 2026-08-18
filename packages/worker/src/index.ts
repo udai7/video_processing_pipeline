@@ -2,7 +2,7 @@ import { Worker } from "bullmq";
 import { TRANSCODE_QUEUE, type TranscodeJobData } from "@vp/shared";
 import { processVideo } from "./pipeline.js";
 import { startMaintenance } from "./maintenance.js";
-import { pool } from "./db.js";
+import { pool, failVideo } from "./db.js";
 
 const url = new URL(process.env.REDIS_URL ?? "redis://localhost:6379");
 const connection = {
@@ -21,7 +21,20 @@ const worker = new Worker<TranscodeJobData>(
 );
 
 worker.on("completed", (job) => console.log(`completed ${job.data.videoId}`));
-worker.on("failed", (job, err) => console.error(`failed ${job?.data.videoId}: ${err.message}`));
+worker.on("failed", (job, err) => {
+  console.error(`failed ${job?.data.videoId}: ${err.message}`);
+  if (!job) return;
+
+  // Once the retries are spent, make sure the video reaches a terminal state.
+  // The pipeline's own catch handles ordinary errors, but a job that stalled
+  // out (worker killed mid-encode) never ran it — the video would otherwise
+  // sit in 'transcoding' forever and the dashboard would poll it forever.
+  const remaining = (job.opts.attempts ?? 1) - job.attemptsMade;
+  if (remaining > 0) return;
+  failVideo(job.data.videoId, err.message)
+    .then((changed) => changed && console.log(`marked ${job.data.videoId} failed`))
+    .catch((e) => console.error("could not mark video failed:", e));
+});
 
 startMaintenance(); // periodic retention sweep (auto-delete old videos)
 

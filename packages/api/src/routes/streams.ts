@@ -5,6 +5,7 @@ import path from "node:path";
 import { pool } from "../db/pool.js";
 import { s3, BUCKETS } from "../storage/s3.js";
 import { isResourceToken, type AnyToken } from "../auth/jwt.js";
+import { DOWNLOAD_COOKIE, readCookie } from "../auth/download.js";
 
 // How long a private-stream token stays valid (seconds).
 const TTL = Number(process.env.SIGNED_URL_TTL ?? 3600);
@@ -31,11 +32,11 @@ async function ownsVideo(userId: string, videoId: string): Promise<boolean> {
  * short-lived stream token carried on every request by hls.js's xhrSetup.
  */
 export async function streamRoutes(app: FastifyInstance) {
-  // GET /api/videos/:id/file?token=… — stream the original upload as a download.
-  // Authorized by a short-lived download token minted at /:id/download.
+  // GET /api/videos/:id/file — stream the original upload as a download.
+  // Authorized by the short-lived, path-scoped cookie set by /:id/download.
   app.get("/:id/file", async (req, reply) => {
     const { id } = req.params as { id: string };
-    const { token } = req.query as { token?: string };
+    const token = readCookie(req, DOWNLOAD_COOKIE);
     if (!token) return reply.code(401).send({ error: "unauthorized" });
 
     try {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
 import { BUCKETS, inputKey, uploadStream, deletePrefix } from "../storage/s3.js";
 import { enqueueTranscode } from "../queue/producer.js";
+import { DOWNLOAD_COOKIE, DOWNLOAD_TTL } from "../auth/download.js";
 
 /** Video routes, mounted under /api/videos. All require authentication. */
 export async function videoRoutes(app: FastifyInstance) {
@@ -103,8 +104,13 @@ export async function videoRoutes(app: FastifyInstance) {
     return rows[0];
   });
 
-  // GET /api/videos/:id/download — mint a short-lived URL to the original file.
-  // The token lets a plain browser navigation stream the file (see /:id/file).
+  // GET /api/videos/:id/download — authorize a download and hand back its URL.
+  //
+  // The grant travels as a short-lived HttpOnly cookie rather than a query
+  // parameter: a plain browser navigation cannot set an Authorization header,
+  // but a `?token=` would be written to the gateway's access log, the user's
+  // history, and any outbound Referer. The cookie is pinned to this one
+  // video's file path so it authorizes nothing else.
   app.get("/:id/download", async (req, reply) => {
     const { id } = req.params as { id: string };
     const { rows } = await pool.query(
@@ -113,8 +119,20 @@ export async function videoRoutes(app: FastifyInstance) {
     );
     if (!rows[0]) return reply.code(404).send({ error: "not found" });
 
-    const token = app.jwt.sign({ vid: id, scope: "download" }, { expiresIn: 300 });
-    return { url: `/api/videos/${id}/file?token=${token}`, filename: rows[0].original_filename };
+    const token = app.jwt.sign({ vid: id, scope: "download" }, { expiresIn: DOWNLOAD_TTL });
+    const path = `/api/videos/${id}/file`;
+    reply.header(
+      "set-cookie",
+      [
+        `${DOWNLOAD_COOKIE}=${token}`,
+        `Path=${path}`,
+        `Max-Age=${DOWNLOAD_TTL}`,
+        "HttpOnly",
+        "SameSite=Strict",
+        ...(req.protocol === "https" ? ["Secure"] : []),
+      ].join("; ")
+    );
+    return { url: path, filename: rows[0].original_filename };
   });
 
   // DELETE /api/videos/:id — remove DB rows (jobs cascade) + all stored objects.

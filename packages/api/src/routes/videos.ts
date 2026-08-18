@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
-import { BUCKETS, inputKey, uploadStream, deletePrefix, safeFilename } from "../storage/s3.js";
+import { BUCKETS, inputKey, createUpload, deletePrefix, safeFilename } from "../storage/s3.js";
 import { enqueueTranscode, cancelTranscode } from "../queue/producer.js";
 import { DOWNLOAD_COOKIE, DOWNLOAD_TTL } from "../auth/download.js";
 
@@ -27,20 +27,45 @@ export async function videoRoutes(app: FastifyInstance) {
 
     const videoId = randomUUID();
     const key = inputKey(videoId, filename);
-    await uploadStream(BUCKETS.inputs, key, data.file, data.mimetype);
 
+    // Abort the transfer the moment the file exceeds MAX_UPLOAD_BYTES rather
+    // than writing the whole allowance and deleting it afterwards. Aborting
+    // also discards the multipart parts, which a plain delete would not.
+    const upload = createUpload(BUCKETS.inputs, key, data.file, data.mimetype);
+    data.file.on("limit", () => void upload.abort().catch(() => {}));
+
+    try {
+      await upload.done();
+    } catch (err) {
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
+      if (data.file.truncated) return reply.code(413).send({ error: "file too large" });
+      throw err;
+    }
     if (data.file.truncated) {
-      // exceeded MAX_UPLOAD_BYTES — drop the partial object, don't create rows
-      await deletePrefix(BUCKETS.inputs, `${videoId}/`);
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
       return reply.code(413).send({ error: "file too large" });
     }
 
-    await pool.query(
-      `INSERT INTO videos (id, user_id, title, original_filename, status)
-       VALUES ($1, $2, $3, $4, 'pending')`,
-      [videoId, req.user.id, title, filename]
-    );
-    await pool.query("INSERT INTO jobs (video_id) VALUES ($1)", [videoId]);
+    // One transaction for both rows, and drop the uploaded object if it fails —
+    // otherwise a DB error leaves bytes in storage that nothing references.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO videos (id, user_id, title, original_filename, status)
+         VALUES ($1, $2, $3, $4, 'pending')`,
+        [videoId, req.user.id, title, filename]
+      );
+      await client.query("INSERT INTO jobs (video_id) VALUES ($1)", [videoId]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
     await enqueueTranscode(videoId);
 
     return reply.code(202).send({ id: videoId, status: "pending" });

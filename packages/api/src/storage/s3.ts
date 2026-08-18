@@ -61,6 +61,22 @@ export async function ensureBuckets(): Promise<void> {
   }
 }
 
+/**
+ * Start a streaming upload and hand back the handle, so the caller can abort a
+ * transfer in flight (which also cleans up the multipart parts).
+ */
+export function createUpload(
+  bucket: string,
+  key: string,
+  body: Readable,
+  contentType?: string
+): Upload {
+  return new Upload({
+    client: s3,
+    params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
+  });
+}
+
 /** Stream a body into object storage without buffering the whole file in memory. */
 export async function uploadStream(
   bucket: string,
@@ -68,10 +84,7 @@ export async function uploadStream(
   body: Readable,
   contentType?: string
 ): Promise<void> {
-  await new Upload({
-    client: s3,
-    params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
-  }).done();
+  await createUpload(bucket, key, body, contentType).done();
 }
 
 /** Delete every object under a key prefix (used when removing a video). */

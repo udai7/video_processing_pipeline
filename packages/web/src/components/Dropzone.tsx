@@ -23,11 +23,22 @@ export function Dropzone({ onUploaded }: { onUploaded: () => void }) {
 
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label="Choose a video to upload, or drop one here"
       className={cn(
-        "cursor-pointer rounded-[10px] border-[1.5px] border-dashed bg-subtle px-4 py-10 text-center text-muted transition-colors hover:border-brand",
+        "cursor-pointer rounded-[10px] border-[1.5px] border-dashed bg-subtle px-4 py-10 text-center text-muted transition-colors hover:border-brand focus-visible:border-brand focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand",
         dragover ? "border-brand bg-brand-soft text-ink" : "border-line-strong",
       )}
       onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => {
+        // Without this the dropzone is mouse-only: it is the sole way to pick
+        // a file, so keyboard users could not upload at all.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          inputRef.current?.click();
+        }
+      }}
       onDragOver={(e) => {
         e.preventDefault();
         setDragover(true);

@@ -62,6 +62,12 @@ jobs:
       - name: Install backend deps
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Build (shared + api + worker)
         run: npm run build
 

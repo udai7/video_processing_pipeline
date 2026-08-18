@@ -71,6 +71,9 @@ jobs:
       - name: API tests
         run: npm run test --workspace @vp/api
 
+      - name: Worker tests
+        run: npm run test --workspace @vp/worker
+
       - name: Build web (typecheck + Vite build)
         working-directory: packages/web
         run: |

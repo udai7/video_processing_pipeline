@@ -12,30 +12,17 @@ const PRESET = process.env.FFMPEG_PRESET ?? "veryfast";
 const HWACCEL = process.env.FFMPEG_HWACCEL;
 
 /**
- * Build the whole ABR ladder in one ffmpeg invocation: decode once, split the
- * video into one branch per rendition, and let the hls muxer segment each
- * variant and write the master playlist.
- *
- * The previous shape encoded each rendition to an intermediate mp4 and then ran
- * a second ffmpeg per rendition to segment it — four decodes of the source and
- * a full set of temporary files for output we throw away. It also hand-wrote
- * the master playlist without CODECS attributes, so players could not tell what
- * they were about to fetch.
- *
- * Returns the local output dir, containing master.m3u8 and one dir per rendition.
+ * Assemble the ffmpeg arguments for the single-pass ladder. Split out from the
+ * run itself so the command can be asserted on in tests without invoking
+ * ffmpeg.
  */
-export async function packageHls(
+export function buildHlsArgs(
   source: string,
-  workDir: string,
+  outDir: string,
   renditions: Rendition[],
-  duration: number,
-  hasAudio: boolean,
-  report: (pct: number) => void
-): Promise<string> {
-  const outDir = path.join(workDir, "out");
+  hasAudio: boolean
+): string[] {
   const names = renditions.map((r) => `${r.height}p`);
-  // The hls muxer writes into these but will not create them.
-  await Promise.all(names.map((n) => mkdir(path.join(outDir, n), { recursive: true })));
 
   // [0:v]split=N[v0]…[vN-1];[v0]scale=-2:h[v0o];…
   const split = `[0:v]split=${renditions.length}${renditions.map((_, i) => `[v${i}]`).join("")}`;
@@ -83,6 +70,38 @@ export async function packageHls(
     "-var_stream_map", varStreamMap,
     path.join(outDir, "%v", "index.m3u8")
   );
+
+  return args;
+}
+
+/**
+ * Build the whole ABR ladder in one ffmpeg invocation: decode once, split the
+ * video into one branch per rendition, and let the hls muxer segment each
+ * variant and write the master playlist.
+ *
+ * The previous shape encoded each rendition to an intermediate mp4 and then ran
+ * a second ffmpeg per rendition to segment it — four decodes of the source and
+ * a full set of temporary files for output we throw away. It also hand-wrote
+ * the master playlist without CODECS attributes, so players could not tell what
+ * they were about to fetch.
+ *
+ * Returns the local output dir, containing master.m3u8 and one dir per rendition.
+ */
+export async function packageHls(
+  source: string,
+  workDir: string,
+  renditions: Rendition[],
+  duration: number,
+  hasAudio: boolean,
+  report: (pct: number) => void
+): Promise<string> {
+  const outDir = path.join(workDir, "out");
+  // The hls muxer writes into these but will not create them.
+  await Promise.all(
+    renditions.map((r) => mkdir(path.join(outDir, `${r.height}p`), { recursive: true }))
+  );
+
+  const args = buildHlsArgs(source, outDir, renditions, hasAudio);
 
   const START = 10;
   const SPAN = 85; // 10% → 95%; finalize owns the rest

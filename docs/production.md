@@ -56,19 +56,29 @@ Redeploys are safe to run mid-transcode: both services handle SIGTERM, and the
 worker finishes its in-flight job before exiting (up to the 10m
 `stop_grace_period`). Expect a redeploy to take as long as the running job.
 
-### Two deploy paths — deliberate, but be aware
+### Deploys are manual
 
-Deployment can be triggered **two different ways**, and both are live:
+There is no automated deploy. Zorvid is a plain `docker compose` project in
+`/opt/zorvid` — it is **not** a Coolify-managed application, despite sharing the
+box with Coolify. Coolify contributes only the Traefik proxy that fronts it, so
+nothing redeploys on push.
 
-1. **Coolify** watches the repo and redeploys on push.
-2. **The `deploy` job in `.github/workflows/ci.yml`** SSHes into the VPS after
-   tests pass on `main` and runs `git reset --hard origin/main` +
-   `docker compose up -d --build`.
+To ship a change:
 
-They target the same host, so a push to `main` can start both at once. If a
-deploy behaves oddly — a build that restarts halfway, or containers recreated
-twice — this overlap is the first thing to check. Consolidating onto one path
-would remove the race; keeping both is a deliberate choice for now.
+```bash
+ssh ubuntu@140.238.248.30
+cd /opt/zorvid
+git fetch origin && git reset --hard origin/main
+docker compose up -d --build
+```
+
+`docker-compose.override.yml` and `.env` are untracked, so `reset --hard` leaves
+the Traefik ingress and secrets alone.
+
+A CI deploy job doing exactly this over SSH was written and then removed: it
+needs `VPS_HOST`, `VPS_USER`, `VPS_APP_DIR` and `VPS_SSH_KEY` as GitHub Actions
+secrets, and those were never set, so it failed on every run. Restore it from
+git history once a dedicated deploy key exists.
 
 ## 5. Operational limits (env-tunable)
 

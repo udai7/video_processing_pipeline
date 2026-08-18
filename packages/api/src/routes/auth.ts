@@ -205,6 +205,13 @@ export async function authRoutes(app: FastifyInstance) {
     if (!payload?.email || !payload.sub) {
       return reply.code(401).send({ error: "invalid Google credential" });
     }
+    // Google does not guarantee a verified address (Workspace domains can issue
+    // unverified ones). Without this check the ON CONFLICT (email) below would
+    // link the Google identity to an existing password account with that
+    // address — an account-takeover path.
+    if (payload.email_verified !== true) {
+      return reply.code(401).send({ error: "google account email is not verified" });
+    }
 
     const email = payload.email.toLowerCase();
     const { rows } = await pool.query<UserRow>(

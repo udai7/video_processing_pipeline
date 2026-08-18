@@ -41,8 +41,18 @@ URI** is needed. The client secret is not used and need not be stored.
 ```bash
 docker compose up -d --build          # build + start everything
 docker compose logs -f api worker     # watch
-curl -s https://zorvid.archilect.in/health   # -> {"status":"ok"}    liveness
-curl -s https://zorvid.archilect.in/ready    # -> {"status":"ready"} deps reachable
+```
+
+`/health` and `/ready` are **not** reachable from the public URL: nginx proxies
+only `/api/`, so anything else falls through to the SPA and returns index.html
+with a 200. A 200 from `https://zorvid.archilect.in/health` therefore proves
+nothing about the API. Check them from the host instead:
+
+```bash
+docker compose ps                                          # api/worker health column
+docker exec zorvid-api-1 wget -qO- http://127.0.0.1:3000/ready
+docker exec zorvid-worker-1 wget -qO- http://127.0.0.1:3001/
+curl -s https://zorvid.archilect.in/api/auth/config         # real end-to-end API check
 ```
 
 Migrations run automatically (one-shot `migrate` service) before the API starts.

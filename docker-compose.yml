@@ -101,7 +101,9 @@ services:
     healthcheck:
       # /ready, not /health: an instance that cannot reach Postgres, Redis or
       # MinIO is not serving requests successfully and should not be routed to.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      # 127.0.0.1, not localhost: the app binds IPv4 only, and busybox wget
+      # resolves localhost to ::1 first and gets connection refused.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/ready || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
@@ -123,7 +125,8 @@ services:
     healthcheck:
       # Reports whether BullMQ is still consuming, not just that the process
       # is alive — a worker that stopped taking jobs looks fine to `ps`.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/ || exit 1"]
+      # 127.0.0.1 for the same IPv6 reason as the API above.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3

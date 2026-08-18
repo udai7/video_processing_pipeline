@@ -120,7 +120,7 @@ builds every package, runs migrations, runs the tests, and builds the SPA on eac
 packages/
   shared/   # shared TS types/enums (Video, Job, queue contract)
   api/      # Fastify: auth, upload, CRUD, streaming, BullMQ producer, migrations
-  worker/   # BullMQ consumer: FFmpeg analyze → transcode → thumbnails → package → finalize
+  worker/   # BullMQ consumer: FFmpeg analyze → transcode+package → thumbnails → finalize
   web/      # React + Vite SPA (auth, upload, progress, hls.js player)
 nginx/      # gateway: SPA + /api proxy + public-HLS cache
 docs/       # architecture.md, steps.md
@@ -130,11 +130,13 @@ docs/       # architecture.md, steps.md
 
 Planned enhancements (tracked for the hosted deployment):
 
-- **SSE/WebSocket** progress instead of polling.
+- **SSE/WebSocket** progress instead of polling (the dashboard currently polls
+  with backoff, 1s → 10s).
 - **Prometheus `/metrics`** (queue depth, jobs processed, transcode duration).
-- **Graceful worker shutdown** + readiness/liveness probes.
 - **Cache purge-on-revoke** (Cloudflare API) when a video flips public → private.
-- **Rate limiting** + request-schema validation.
+- **Request-schema validation** on the API routes.
+- **Session tokens in HttpOnly cookies** instead of `localStorage`, so an XSS
+  cannot walk off with a 7-day session.
 
 > **Note on revocation:** flipping a video public → private does not retroactively
 > evict already-cached copies for the cache TTL — an inherent CDN property, addressed

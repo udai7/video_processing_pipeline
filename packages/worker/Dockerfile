@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/worker/package.json packages/worker/
-RUN npm install
+RUN npm ci --workspace @vp/worker --include-workspace-root
 COPY packages/shared packages/shared
 COPY packages/worker packages/worker
 RUN npm run build --workspace @vp/shared && npm run build --workspace @vp/worker
@@ -17,7 +17,7 @@ RUN apk add --no-cache ffmpeg
 COPY package.json package-lock.json* tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/worker/package.json packages/worker/
-RUN npm install --omit=dev
+RUN npm ci --omit=dev --workspace @vp/worker --include-workspace-root
 COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/worker/dist packages/worker/dist
 CMD ["node", "packages/worker/dist/index.js"]

@@ -1,18 +1,6 @@
-// Sane defaults so tests run against local containers (or CI services) without
-// requiring a .env. Real values (set by CI or the shell) always win.
-process.env.NODE_ENV ||= "test"; // disables rate limiting so tests can hammer auth
-process.env.JWT_SECRET ||= "test-secret-please-ignore-0123456789";
-process.env.DATABASE_URL ||= "postgres://vp:secret@localhost:5432/video_processing";
-process.env.REDIS_URL ||= "redis://localhost:6379";
-process.env.MINIO_ENDPOINT ||= "localhost";
-process.env.MINIO_PORT ||= "9000";
-process.env.MINIO_USE_SSL ||= "false";
-process.env.MINIO_ROOT_USER ||= "minioadmin";
-process.env.MINIO_ROOT_PASSWORD ||= "minioadmin";
-process.env.BUCKET_INPUTS ||= "inputs";
-process.env.BUCKET_OUTPUTS ||= "outputs";
-process.env.BUCKET_THUMBS ||= "thumbnails";
-process.env.SIGNED_URL_TTL ||= "3600";
+// Env defaults must be applied before any application module is imported —
+// see ./env.ts for why this is a separate side-effect import.
+import "./env.js";
 
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/server.js";

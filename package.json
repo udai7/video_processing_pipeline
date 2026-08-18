@@ -13,9 +13,17 @@
     "build": "npm run build --workspaces --if-present",
     "dev:api": "npm run dev --workspace @vp/api",
     "dev:worker": "npm run dev --workspace @vp/worker",
-    "migrate": "npm run migrate --workspace @vp/api"
+    "migrate": "npm run migrate --workspace @vp/api",
+    "lint": "eslint ."
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "eslint-plugin-jsx-a11y": "6.10.2",
+    "eslint-plugin-react-hooks": "5.2.0",
+    "globals": "15.15.0",
+    "typescript-eslint": "8.67.0"
   }
 }

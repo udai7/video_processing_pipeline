@@ -18,11 +18,3 @@ export function selectRenditions(sourceHeight: number): Rendition[] {
   const even = Math.max(2, sourceHeight - (sourceHeight % 2));
   return [{ height: even, videoBitrate: "600k", audioBitrate: "96k" }];
 }
-
-/** Parse "800k"/"1.5m" into bits per second. */
-export function bitrateToBps(b: string): number {
-  const n = parseFloat(b);
-  if (b.endsWith("m")) return Math.round(n * 1_000_000);
-  if (b.endsWith("k")) return Math.round(n * 1_000);
-  return Math.round(n);
-}

@@ -37,6 +37,11 @@ function toUser(row: UserRow) {
 }
 
 const USER_COLS = "id, email, first_name, last_name, phone, email_verified, created_at";
+
+// Per-account login throttle. The IP-keyed rate limiter does not stop a
+// distributed run against one account; this does.
+const LOCK_THRESHOLD = Number(process.env.LOGIN_LOCK_THRESHOLD ?? 10);
+const LOCK_MINUTES = Number(process.env.LOGIN_LOCK_MINUTES ?? 15);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // 2FA is on by default; set TWO_FACTOR_ENABLED=false to issue tokens directly.
@@ -124,15 +129,46 @@ export async function authRoutes(app: FastifyInstance) {
       return reply.code(400).send({ error: "email and password are required" });
     }
 
-    const { rows } = await pool.query<UserRow & { password_hash: string | null }>(
-      `SELECT ${USER_COLS}, password_hash FROM users WHERE email = $1`,
+    const { rows } = await pool.query<
+      UserRow & { password_hash: string | null; locked_until: Date | null }
+    >(
+      `SELECT ${USER_COLS}, password_hash, locked_until FROM users WHERE email = $1`,
       [email]
     );
     const row = rows[0];
 
+    if (row?.locked_until && row.locked_until > new Date()) {
+      return reply
+        .code(429)
+        .send({ error: "too many failed attempts; try again in a few minutes" });
+    }
+
     if (!row || !row.password_hash || !(await argon2.verify(row.password_hash, password))) {
+      if (row) {
+        // Count the failure and lock the account once it crosses the threshold.
+        await pool.query(
+          `UPDATE users
+              SET failed_login_count = CASE
+                    WHEN failed_login_count + 1 >= $2 THEN 0
+                    ELSE failed_login_count + 1
+                  END,
+                  locked_until = CASE
+                    WHEN failed_login_count + 1 >= $2
+                    THEN now() + ($3 || ' minutes')::interval
+                    ELSE locked_until
+                  END
+            WHERE id = $1`,
+          [row.id, LOCK_THRESHOLD, String(LOCK_MINUTES)]
+        );
+      }
       return reply.code(401).send({ error: "invalid credentials" });
     }
+
+    // A good password clears the counter.
+    await pool.query(
+      "UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = $1",
+      [row.id]
+    );
 
     const user = toUser(row);
     if (!twoFactorEnabled) {
@@ -204,6 +240,13 @@ export async function authRoutes(app: FastifyInstance) {
     }
     if (!payload?.email || !payload.sub) {
       return reply.code(401).send({ error: "invalid Google credential" });
+    }
+    // Google does not guarantee a verified address (Workspace domains can issue
+    // unverified ones). Without this check the ON CONFLICT (email) below would
+    // link the Google identity to an existing password account with that
+    // address — an account-takeover path.
+    if (payload.email_verified !== true) {
+      return reply.code(401).send({ error: "google account email is not verified" });
     }
 
     const email = payload.email.toLowerCase();

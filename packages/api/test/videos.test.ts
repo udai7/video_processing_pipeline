@@ -1,6 +1,7 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 import FormData from "form-data";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import { makeApp, teardown, registerUser } from "./helpers.js";
 
@@ -108,19 +109,34 @@ describe("videos", () => {
     });
     assert.equal(bad.statusCode, 400);
 
-    // download url + fetch the original bytes via the token
+    // download grant: a path-scoped HttpOnly cookie, never a query parameter
     const dl = await app.inject({ method: "GET", url: `/api/videos/${id}/download`, headers: auth() });
     assert.equal(dl.statusCode, 200);
     const { url } = dl.json();
-    assert.match(url, /\/file\?token=/);
+    assert.equal(url, `/api/videos/${id}/file`);
 
-    const file = await app.inject({ method: "GET", url });
+    const setCookie = String(dl.headers["set-cookie"]);
+    assert.match(setCookie, /^vp_download=/);
+    assert.match(setCookie, new RegExp(`Path=/api/videos/${id}/file`));
+    assert.match(setCookie, /HttpOnly/);
+    assert.match(setCookie, /SameSite=Strict/);
+
+    const cookie = setCookie.split(";")[0];
+    const file = await app.inject({ method: "GET", url, headers: { cookie } });
     assert.equal(file.statusCode, 200);
     assert.equal(file.body, "original-bytes");
 
-    // without a token the file is not accessible
-    const noToken = await app.inject({ method: "GET", url: `/api/videos/${id}/file` });
-    assert.equal(noToken.statusCode, 401);
+    // without the cookie the file is not accessible
+    const noCookie = await app.inject({ method: "GET", url: `/api/videos/${id}/file` });
+    assert.equal(noCookie.statusCode, 401);
+
+    // a cookie minted for another video does not unlock this one
+    const other = await app.inject({
+      method: "GET",
+      url: `/api/videos/${id}/file`,
+      headers: { cookie: `vp_download=${app.jwt.sign({ vid: randomUUID(), scope: "download" })}` },
+    });
+    assert.equal(other.statusCode, 401);
   });
 
   test("a user cannot see another user's video", async () => {

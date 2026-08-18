@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
-import { BUCKETS, inputKey, uploadStream, deletePrefix } from "../storage/s3.js";
-import { enqueueTranscode } from "../queue/producer.js";
+import { BUCKETS, inputKey, createUpload, deletePrefix, safeFilename } from "../storage/s3.js";
+import { enqueueTranscode, cancelTranscode } from "../queue/producer.js";
+import { DOWNLOAD_COOKIE, DOWNLOAD_TTL } from "../auth/download.js";
 
 /** Video routes, mounted under /api/videos. All require authentication. */
 export async function videoRoutes(app: FastifyInstance) {
@@ -13,28 +14,58 @@ export async function videoRoutes(app: FastifyInstance) {
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: "file is required" });
 
+    // Never trust the client's filename: it becomes an object key and a
+    // Content-Disposition value. The sanitized form is what we persist, so the
+    // worker rebuilds the identical key.
+    const filename = safeFilename(data.filename);
+
     const titleField = data.fields.title;
     const title =
       titleField && !Array.isArray(titleField) && titleField.type === "field"
         ? String(titleField.value)
-        : data.filename;
+        : filename;
 
     const videoId = randomUUID();
-    const key = inputKey(videoId, data.filename);
-    await uploadStream(BUCKETS.inputs, key, data.file, data.mimetype);
+    const key = inputKey(videoId, filename);
 
+    // Abort the transfer the moment the file exceeds MAX_UPLOAD_BYTES rather
+    // than writing the whole allowance and deleting it afterwards. Aborting
+    // also discards the multipart parts, which a plain delete would not.
+    const upload = createUpload(BUCKETS.inputs, key, data.file, data.mimetype);
+    data.file.on("limit", () => void upload.abort().catch(() => {}));
+
+    try {
+      await upload.done();
+    } catch (err) {
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
+      if (data.file.truncated) return reply.code(413).send({ error: "file too large" });
+      throw err;
+    }
     if (data.file.truncated) {
-      // exceeded MAX_UPLOAD_BYTES — drop the partial object, don't create rows
-      await deletePrefix(BUCKETS.inputs, `${videoId}/`);
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
       return reply.code(413).send({ error: "file too large" });
     }
 
-    await pool.query(
-      `INSERT INTO videos (id, user_id, title, original_filename, status)
-       VALUES ($1, $2, $3, $4, 'pending')`,
-      [videoId, req.user.id, title, data.filename]
-    );
-    await pool.query("INSERT INTO jobs (video_id) VALUES ($1)", [videoId]);
+    // One transaction for both rows, and drop the uploaded object if it fails —
+    // otherwise a DB error leaves bytes in storage that nothing references.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `INSERT INTO videos (id, user_id, title, original_filename, status)
+         VALUES ($1, $2, $3, $4, 'pending')`,
+        [videoId, req.user.id, title, filename]
+      );
+      await client.query("INSERT INTO jobs (video_id) VALUES ($1)", [videoId]);
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch(() => {});
+      await deletePrefix(BUCKETS.inputs, `${videoId}/`).catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+
     await enqueueTranscode(videoId);
 
     return reply.code(202).send({ id: videoId, status: "pending" });
@@ -103,8 +134,13 @@ export async function videoRoutes(app: FastifyInstance) {
     return rows[0];
   });
 
-  // GET /api/videos/:id/download — mint a short-lived URL to the original file.
-  // The token lets a plain browser navigation stream the file (see /:id/file).
+  // GET /api/videos/:id/download — authorize a download and hand back its URL.
+  //
+  // The grant travels as a short-lived HttpOnly cookie rather than a query
+  // parameter: a plain browser navigation cannot set an Authorization header,
+  // but a `?token=` would be written to the gateway's access log, the user's
+  // history, and any outbound Referer. The cookie is pinned to this one
+  // video's file path so it authorizes nothing else.
   app.get("/:id/download", async (req, reply) => {
     const { id } = req.params as { id: string };
     const { rows } = await pool.query(
@@ -113,8 +149,20 @@ export async function videoRoutes(app: FastifyInstance) {
     );
     if (!rows[0]) return reply.code(404).send({ error: "not found" });
 
-    const token = app.jwt.sign({ id, scope: "download" } as never, { expiresIn: 300 });
-    return { url: `/api/videos/${id}/file?token=${token}`, filename: rows[0].original_filename };
+    const token = app.jwt.sign({ vid: id, scope: "download" }, { expiresIn: DOWNLOAD_TTL });
+    const path = `/api/videos/${id}/file`;
+    reply.header(
+      "set-cookie",
+      [
+        `${DOWNLOAD_COOKIE}=${token}`,
+        `Path=${path}`,
+        `Max-Age=${DOWNLOAD_TTL}`,
+        "HttpOnly",
+        "SameSite=Strict",
+        ...(req.protocol === "https" ? ["Secure"] : []),
+      ].join("; ")
+    );
+    return { url: path, filename: rows[0].original_filename };
   });
 
   // DELETE /api/videos/:id — remove DB rows (jobs cascade) + all stored objects.
@@ -125,6 +173,11 @@ export async function videoRoutes(app: FastifyInstance) {
       [id, req.user.id]
     );
     if (!rowCount) return reply.code(404).send({ error: "not found" });
+
+    // Drop the queued job first. If it is already running it cannot be
+    // removed here, but the row is gone, so the pipeline aborts at its next
+    // existence check instead of uploading outputs nothing will ever clean up.
+    await cancelTranscode(id);
 
     await Promise.all([
       deletePrefix(BUCKETS.inputs, `${id}/`),

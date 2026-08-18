@@ -29,6 +29,22 @@ export const s3 = new S3Client({
   },
 });
 
+/**
+ * Reduce a client-supplied filename to a single safe path segment.
+ *
+ * The raw value is attacker-controlled and ends up in an object key, in the
+ * database, and in a Content-Disposition header. Separators would let a key
+ * escape its `<videoId>/` prefix, and CR/LF would break the header.
+ */
+export function safeFilename(name: string | undefined): string {
+  const base = (name ?? "").replace(/\\/g, "/").split("/").pop() ?? "";
+  const cleaned = base
+    .replace(/[^A-Za-z0-9._-]/g, "_") // keep it to an unambiguous alphabet
+    .replace(/^\.+/, "") // no leading dots: no "..", no hidden files
+    .slice(0, 200);
+  return cleaned || "upload";
+}
+
 /** Deterministic key for a video's source upload (worker reconstructs the same key). */
 export function inputKey(videoId: string, filename: string): string {
   return `${videoId}/${filename}`;
@@ -45,6 +61,22 @@ export async function ensureBuckets(): Promise<void> {
   }
 }
 
+/**
+ * Start a streaming upload and hand back the handle, so the caller can abort a
+ * transfer in flight (which also cleans up the multipart parts).
+ */
+export function createUpload(
+  bucket: string,
+  key: string,
+  body: Readable,
+  contentType?: string
+): Upload {
+  return new Upload({
+    client: s3,
+    params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
+  });
+}
+
 /** Stream a body into object storage without buffering the whole file in memory. */
 export async function uploadStream(
   bucket: string,
@@ -52,10 +84,7 @@ export async function uploadStream(
   body: Readable,
   contentType?: string
 ): Promise<void> {
-  await new Upload({
-    client: s3,
-    params: { Bucket: bucket, Key: key, Body: body, ContentType: contentType },
-  }).done();
+  await createUpload(bucket, key, body, contentType).done();
 }
 
 /** Delete every object under a key prefix (used when removing a video). */

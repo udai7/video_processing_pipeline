@@ -98,6 +98,14 @@ services:
         condition: service_completed_successfully
     expose:
       - "3000"
+    healthcheck:
+      # /ready, not /health: an instance that cannot reach Postgres, Redis or
+      # MinIO is not serving requests successfully and should not be routed to.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
 
   worker:
     build:
@@ -112,6 +120,17 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    healthcheck:
+      # Reports whether BullMQ is still consuming, not just that the process
+      # is alive — a worker that stopped taking jobs looks fine to `ps`.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # The worker finishes its in-flight transcode on SIGTERM. Docker's default
+    # 10s grace period would SIGKILL it mid-encode, so allow a long drain.
+    stop_grace_period: 10m
     # Scale transcoding horizontally:  docker compose up -d --scale worker=3
 
   # Gateway: builds the React SPA, serves it, and proxies/caches /api + HLS.
@@ -123,7 +142,8 @@ services:
         VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
     restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "${HTTP_HOST_PORT:-8080}:80"
 

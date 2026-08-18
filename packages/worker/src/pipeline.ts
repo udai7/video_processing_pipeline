@@ -17,10 +17,26 @@ import { BUCKETS, downloadTo, deletePrefix, inputKey } from "./storage.js";
 const MAX_USER_SECONDS = Number(process.env.MAX_VIDEO_SECONDS_PER_USER ?? 600);
 import { probe } from "./ffmpeg/probe.js";
 import { selectRenditions } from "./renditions.js";
-import { transcode } from "./stages/transcode.js";
 import { thumbnails } from "./stages/thumbnails.js";
-import { packageHls } from "./stages/package.js";
+import { packageHls } from "./stages/hls.js";
 import { finalize } from "./stages/finalize.js";
+
+/** Raised when the video row disappears mid-pipeline (the user deleted it). */
+class VideoDeleted extends Error {
+  constructor(videoId: string) {
+    super(`video ${videoId} was deleted during processing`);
+  }
+}
+
+/**
+ * Abort if the video is gone. Deleting a video removes its row and files, but
+ * a job already running cannot be cancelled from the API — without this check
+ * the pipeline would happily upload outputs afterwards, leaving objects that
+ * no row references and the retention sweep never reaches.
+ */
+async function assertStillExists(videoId: string): Promise<void> {
+  if (!(await getVideo(videoId))) throw new VideoDeleted(videoId);
+}
 
 /** Throttle progress writes to one DB update per whole-percent change. */
 function makeReporter(videoId: string): (pct: number) => void {
@@ -77,30 +93,44 @@ export async function processVideo(videoId: string): Promise<void> {
 
     const renditions = selectRenditions(meta.height);
 
-    // 2. Transcode
+    // 2. Transcode + package, in a single ffmpeg pass over the source.
     await setStatus(videoId, "transcoding");
     await updateJob(videoId, { stage: "transcode" });
     await appendLog(videoId, `[transcode] ${renditions.map((r) => `${r.height}p`).join(", ")}\n`);
-    const rends = await transcode(source, workDir, renditions, meta.duration, report);
+    const outDir = await packageHls(
+      source,
+      workDir,
+      renditions,
+      meta.duration,
+      Boolean(meta.audioCodec),
+      report
+    );
 
     // 3. Thumbnails
     await setStatus(videoId, "thumbnails");
     await updateJob(videoId, { stage: "thumbnails" });
     const thumbs = await thumbnails(source, workDir, meta.duration, report);
 
-    // 4. Package HLS
-    await setStatus(videoId, "packaging");
-    await updateJob(videoId, { stage: "package" });
-    const outDir = await packageHls(rends, workDir, meta, report);
-
-    // 5. Finalize
+    // 4. Finalize
+    await assertStillExists(videoId); // don't upload outputs for a deleted video
     await updateJob(videoId, { stage: "finalize" });
     await finalize(videoId, outDir, thumbs, report);
+    await assertStillExists(videoId); // deleted while uploading — clean up below
     await setMasterKey(videoId, `${videoId}/master.m3u8`);
     await setStatus(videoId, "completed");
     await updateJob(videoId, { progress: 100 });
     await appendLog(videoId, "[done] completed\n");
   } catch (err) {
+    if (err instanceof VideoDeleted) {
+      // No row to mark and nothing to retry; just remove anything we uploaded.
+      await Promise.all([
+        deletePrefix(BUCKETS.outputs, `${videoId}/`),
+        deletePrefix(BUCKETS.thumbs, `${videoId}/`),
+        deletePrefix(BUCKETS.inputs, `${videoId}/`),
+      ]).catch(() => {});
+      console.log(err.message);
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     await setStatus(videoId, "failed").catch(() => {});
     await setError(videoId, message).catch(() => {});

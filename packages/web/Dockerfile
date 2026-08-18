@@ -3,7 +3,7 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY packages/web/package.json packages/web/package-lock.json* ./
-RUN npm install
+RUN npm ci
 COPY packages/web/ ./
 # Production SPA calls the API at the same origin under /api (served by nginx).
 ENV VITE_API_BASE=/api

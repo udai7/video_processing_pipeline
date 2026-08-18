@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
-import { BUCKETS, inputKey, uploadStream, deletePrefix } from "../storage/s3.js";
+import { BUCKETS, inputKey, uploadStream, deletePrefix, safeFilename } from "../storage/s3.js";
 import { enqueueTranscode } from "../queue/producer.js";
 import { DOWNLOAD_COOKIE, DOWNLOAD_TTL } from "../auth/download.js";
 
@@ -14,14 +14,19 @@ export async function videoRoutes(app: FastifyInstance) {
     const data = await req.file();
     if (!data) return reply.code(400).send({ error: "file is required" });
 
+    // Never trust the client's filename: it becomes an object key and a
+    // Content-Disposition value. The sanitized form is what we persist, so the
+    // worker rebuilds the identical key.
+    const filename = safeFilename(data.filename);
+
     const titleField = data.fields.title;
     const title =
       titleField && !Array.isArray(titleField) && titleField.type === "field"
         ? String(titleField.value)
-        : data.filename;
+        : filename;
 
     const videoId = randomUUID();
-    const key = inputKey(videoId, data.filename);
+    const key = inputKey(videoId, filename);
     await uploadStream(BUCKETS.inputs, key, data.file, data.mimetype);
 
     if (data.file.truncated) {
@@ -33,7 +38,7 @@ export async function videoRoutes(app: FastifyInstance) {
     await pool.query(
       `INSERT INTO videos (id, user_id, title, original_filename, status)
        VALUES ($1, $2, $3, $4, 'pending')`,
-      [videoId, req.user.id, title, data.filename]
+      [videoId, req.user.id, title, filename]
     );
     await pool.query("INSERT INTO jobs (video_id) VALUES ($1)", [videoId]);
     await enqueueTranscode(videoId);

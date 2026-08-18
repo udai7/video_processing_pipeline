@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import { randomInt } from "node:crypto";
 import { pool } from "../db/pool.js";
 
 const TTL_MINUTES = 10;
@@ -6,9 +7,14 @@ const MAX_ATTEMPTS = 5;
 
 export type OtpPurpose = "register" | "login";
 
-/** Cryptographically-simple 6-digit code (000000–999999). */
+/**
+ * Random 6-digit code (100000–999999) from the CSPRNG. Must not use
+ * Math.random(): its output is predictable from previously observed values,
+ * which would let an attacker who can request their own codes guess someone
+ * else's.
+ */
 function generateCode(): string {
-  return String(Math.floor(100000 + Math.random() * 900000));
+  return String(randomInt(100000, 1000000));
 }
 
 /**

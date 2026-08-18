@@ -7,6 +7,8 @@ import { videoRoutes } from "./routes/videos.js";
 import { streamRoutes } from "./routes/streams.js";
 import { ensureBuckets } from "./storage/s3.js";
 import { cleanupExpiredOtps } from "./auth/otp.js";
+import { pool } from "./db/pool.js";
+import { transcodeQueue } from "./queue/producer.js";
 
 const port = Number(process.env.API_PORT ?? 3000);
 
@@ -63,6 +65,26 @@ async function start() {
       .catch((err) => app.log.warn({ err }, "OTP cleanup failed"));
   }, 3_600_000);
   otpSweep.unref();
+
+  // Drain in-flight requests and release the pool/queue connections on the
+  // signals Docker and Ctrl-C send, rather than dropping them on SIGKILL.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info(`${signal} received — draining requests`);
+    try {
+      await app.close();
+      await transcodeQueue.close();
+      await pool.end();
+      process.exit(0);
+    } catch (err) {
+      app.log.error({ err }, "error during shutdown");
+      process.exit(1);
+    }
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 
   await app.listen({ port, host: "0.0.0.0" });
 }

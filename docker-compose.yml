@@ -112,6 +112,9 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    # The worker finishes its in-flight transcode on SIGTERM. Docker's default
+    # 10s grace period would SIGKILL it mid-encode, so allow a long drain.
+    stop_grace_period: 10m
     # Scale transcoding horizontally:  docker compose up -d --scale worker=3
 
   # Gateway: builds the React SPA, serves it, and proxies/caches /api + HLS.

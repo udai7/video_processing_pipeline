@@ -17,9 +17,8 @@ import { BUCKETS, downloadTo, deletePrefix, inputKey } from "./storage.js";
 const MAX_USER_SECONDS = Number(process.env.MAX_VIDEO_SECONDS_PER_USER ?? 600);
 import { probe } from "./ffmpeg/probe.js";
 import { selectRenditions } from "./renditions.js";
-import { transcode } from "./stages/transcode.js";
 import { thumbnails } from "./stages/thumbnails.js";
-import { packageHls } from "./stages/package.js";
+import { packageHls } from "./stages/hls.js";
 import { finalize } from "./stages/finalize.js";
 
 /** Raised when the video row disappears mid-pipeline (the user deleted it). */
@@ -94,23 +93,25 @@ export async function processVideo(videoId: string): Promise<void> {
 
     const renditions = selectRenditions(meta.height);
 
-    // 2. Transcode
+    // 2. Transcode + package, in a single ffmpeg pass over the source.
     await setStatus(videoId, "transcoding");
     await updateJob(videoId, { stage: "transcode" });
     await appendLog(videoId, `[transcode] ${renditions.map((r) => `${r.height}p`).join(", ")}\n`);
-    const rends = await transcode(source, workDir, renditions, meta.duration, report);
+    const outDir = await packageHls(
+      source,
+      workDir,
+      renditions,
+      meta.duration,
+      Boolean(meta.audioCodec),
+      report
+    );
 
     // 3. Thumbnails
     await setStatus(videoId, "thumbnails");
     await updateJob(videoId, { stage: "thumbnails" });
     const thumbs = await thumbnails(source, workDir, meta.duration, report);
 
-    // 4. Package HLS
-    await setStatus(videoId, "packaging");
-    await updateJob(videoId, { stage: "package" });
-    const outDir = await packageHls(rends, workDir, meta, report);
-
-    // 5. Finalize
+    // 4. Finalize
     await assertStillExists(videoId); // don't upload outputs for a deleted video
     await updateJob(videoId, { stage: "finalize" });
     await finalize(videoId, outDir, thumbs, report);

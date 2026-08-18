@@ -5,7 +5,7 @@ const COUNT = 6;
 
 /**
  * Stage 3 — extract 6 evenly-spaced JPEG frames.
- * Reports progress across the 70%→85% band. Returns the local file paths.
+ * Reports progress across the 95%→98% band. Returns the local file paths.
  */
 export async function thumbnails(
   source: string,
@@ -20,7 +20,7 @@ export async function thumbnails(
     const file = path.join(workDir, `thumb_${i}.jpg`);
     // Input seeking (-ss before -i) is fast and accurate enough for thumbnails.
     await runFfmpeg(["-ss", String(t), "-i", source, "-frames:v", "1", "-vf", "scale=-2:360", file]);
-    report(70 + ((i + 1) / COUNT) * 15);
+    report(95 + ((i + 1) / COUNT) * 3);
     files.push(file);
   }
 

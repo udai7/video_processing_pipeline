@@ -113,7 +113,7 @@ export async function videoRoutes(app: FastifyInstance) {
     );
     if (!rows[0]) return reply.code(404).send({ error: "not found" });
 
-    const token = app.jwt.sign({ id, scope: "download" } as never, { expiresIn: 300 });
+    const token = app.jwt.sign({ vid: id, scope: "download" }, { expiresIn: 300 });
     return { url: `/api/videos/${id}/file?token=${token}`, filename: rows[0].original_filename };
   });
 

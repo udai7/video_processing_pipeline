@@ -4,6 +4,7 @@ import type { Readable } from "node:stream";
 import path from "node:path";
 import { pool } from "../db/pool.js";
 import { s3, BUCKETS } from "../storage/s3.js";
+import { isResourceToken, type AnyToken } from "../auth/jwt.js";
 
 // How long a private-stream token stays valid (seconds).
 const TTL = Number(process.env.SIGNED_URL_TTL ?? 3600);
@@ -38,8 +39,10 @@ export async function streamRoutes(app: FastifyInstance) {
     if (!token) return reply.code(401).send({ error: "unauthorized" });
 
     try {
-      const decoded = app.jwt.verify(token) as { id: string; scope?: string };
-      if (decoded.scope !== "download" || decoded.id !== id) throw new Error("bad token");
+      const decoded = app.jwt.verify(token) as AnyToken;
+      if (!isResourceToken(decoded) || decoded.scope !== "download" || decoded.vid !== id) {
+        throw new Error("bad token");
+      }
     } catch {
       return reply.code(401).send({ error: "unauthorized" });
     }
@@ -85,7 +88,7 @@ export async function streamRoutes(app: FastifyInstance) {
 
     // Private: mint a short-lived token scoped to this video. hls.js attaches it
     // as a Bearer header on every (nested) request, so segments stay authorized.
-    const token = app.jwt.sign({ id, scope: "stream" } as never, { expiresIn: TTL });
+    const token = app.jwt.sign({ vid: id, scope: "stream" }, { expiresIn: TTL });
     return { visibility: "private", url, token, expiresIn: TTL };
   });
 
@@ -104,11 +107,10 @@ export async function streamRoutes(app: FastifyInstance) {
     if (v.visibility === "private") {
       let ok = false;
       try {
-        const decoded = (await req.jwtVerify()) as { id: string; scope?: string };
-        ok =
-          decoded.scope === "stream"
-            ? decoded.id === id // stream token scoped to this video
-            : await ownsVideo(decoded.id, id); // owner's user token
+        const decoded = (await req.jwtVerify()) as AnyToken;
+        ok = isResourceToken(decoded)
+          ? decoded.scope === "stream" && decoded.vid === id // stream token for this video
+          : await ownsVideo(decoded.id, id); // owner's session token
       } catch {
         ok = false;
       }

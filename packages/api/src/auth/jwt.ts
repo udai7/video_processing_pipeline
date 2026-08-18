@@ -1,11 +1,37 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fastifyJwt from "@fastify/jwt";
 
+/** A session token. Its subject is a *user*. */
+export interface UserToken {
+  id: string;
+  email: string;
+}
+
+/**
+ * A short-lived token scoped to a single *video*, minted for browser
+ * navigations that cannot carry an Authorization header (downloads) or for
+ * nested HLS requests. Deliberately uses `vid` rather than `id` so a resource
+ * token can never be mistaken for a user token — the two are signed with the
+ * same secret, so only the claim names keep them apart.
+ */
+export interface ResourceToken {
+  vid: string;
+  scope: "download" | "stream";
+}
+
+export type AnyToken = UserToken | ResourceToken;
+
+/** Narrow a decoded token to the video-scoped variant. */
+export function isResourceToken(token: AnyToken): token is ResourceToken {
+  return typeof (token as ResourceToken).vid === "string";
+}
+
 // The shape of our JWT payload and the decoded `request.user`.
 declare module "@fastify/jwt" {
   interface FastifyJWT {
-    payload: { id: string; email: string };
-    user: { id: string; email: string };
+    payload: AnyToken;
+    // Routes behind `authenticate` only ever see session tokens.
+    user: UserToken;
   }
 }
 
@@ -31,7 +57,9 @@ export async function registerAuth(app: FastifyInstance) {
 
   app.decorate("authenticate", async (req: FastifyRequest, reply: FastifyReply) => {
     try {
-      await req.jwtVerify();
+      const token = (await req.jwtVerify()) as AnyToken;
+      // A video-scoped token must never authenticate a user-level route.
+      if (isResourceToken(token)) throw new Error("not a session token");
     } catch {
       reply.code(401).send({ error: "unauthorized" });
     }

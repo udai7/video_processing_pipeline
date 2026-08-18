@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { pool } from "../db/pool.js";
 import { BUCKETS, inputKey, uploadStream, deletePrefix, safeFilename } from "../storage/s3.js";
-import { enqueueTranscode } from "../queue/producer.js";
+import { enqueueTranscode, cancelTranscode } from "../queue/producer.js";
 import { DOWNLOAD_COOKIE, DOWNLOAD_TTL } from "../auth/download.js";
 
 /** Video routes, mounted under /api/videos. All require authentication. */
@@ -148,6 +148,11 @@ export async function videoRoutes(app: FastifyInstance) {
       [id, req.user.id]
     );
     if (!rowCount) return reply.code(404).send({ error: "not found" });
+
+    // Drop the queued job first. If it is already running it cannot be
+    // removed here, but the row is gone, so the pipeline aborts at its next
+    // existence check instead of uploading outputs nothing will ever clean up.
+    await cancelTranscode(id);
 
     await Promise.all([
       deletePrefix(BUCKETS.inputs, `${id}/`),

@@ -5,12 +5,23 @@ import { registerAuth } from "./auth/jwt.js";
 import { authRoutes } from "./routes/auth.js";
 import { videoRoutes } from "./routes/videos.js";
 import { streamRoutes } from "./routes/streams.js";
-import { ensureBuckets } from "./storage/s3.js";
+import { HeadBucketCommand } from "@aws-sdk/client-s3";
+import { ensureBuckets, s3, BUCKETS } from "./storage/s3.js";
 import { cleanupExpiredOtps } from "./auth/otp.js";
 import { pool } from "./db/pool.js";
 import { transcodeQueue } from "./queue/producer.js";
 
 const port = Number(process.env.API_PORT ?? 3000);
+
+/** Run one readiness probe, reporting rather than throwing. */
+async function check(name: string, probe: () => Promise<unknown>) {
+  try {
+    await probe();
+    return { name, ok: true };
+  } catch (err) {
+    return { name, ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 /**
  * Build the fully-wired Fastify app without listening. Exported so tests can
@@ -46,7 +57,27 @@ export async function buildApp(opts: { logger?: boolean } = {}): Promise<Fastify
     app.log.warn({ err }, "could not ensure MinIO buckets at startup");
   }
 
+  // Liveness: the process is up and serving. Deliberately checks nothing else,
+  // so a blip in Postgres cannot get the container restarted for no reason.
   app.get("/health", async () => ({ status: "ok" }));
+
+  // Readiness: can this instance actually do its job? Returns 503 with the
+  // failing dependency named, so a load balancer stops sending it traffic and
+  // the cause is visible without digging through logs.
+  app.get("/ready", async (_req, reply) => {
+    const checks = await Promise.all([
+      check("postgres", () => pool.query("SELECT 1")),
+      // waitUntilReady resolves only once the Redis connection is usable.
+      check("redis", () => transcodeQueue.waitUntilReady()),
+      check("storage", () => s3.send(new HeadBucketCommand({ Bucket: BUCKETS.inputs }))),
+    ]);
+
+    const failed = checks.filter((c) => !c.ok);
+    if (failed.length) {
+      return reply.code(503).send({ status: "unavailable", checks });
+    }
+    return { status: "ready", checks };
+  });
   await app.register(authRoutes, { prefix: "/api/auth" });
   await app.register(videoRoutes, { prefix: "/api/videos" });
   await app.register(streamRoutes, { prefix: "/api/videos" });

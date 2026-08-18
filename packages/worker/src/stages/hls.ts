@@ -3,6 +3,14 @@ import { mkdir } from "node:fs/promises";
 import { runFfmpeg } from "../ffmpeg/run.js";
 import type { Rendition } from "../renditions.js";
 
+// Encoder settings. The defaults are pure software x264, which works
+// everywhere. On a box with a GPU, set FFMPEG_VIDEO_ENCODER=h264_nvenc (plus a
+// preset that encoder understands, e.g. FFMPEG_PRESET=p4) and optionally
+// FFMPEG_HWACCEL=cuda to decode on the GPU too. Left unset, nothing changes.
+const ENCODER = process.env.FFMPEG_VIDEO_ENCODER ?? "libx264";
+const PRESET = process.env.FFMPEG_PRESET ?? "veryfast";
+const HWACCEL = process.env.FFMPEG_HWACCEL;
+
 /**
  * Build the whole ABR ladder in one ffmpeg invocation: decode once, split the
  * video into one branch per rendition, and let the hls muxer segment each
@@ -34,14 +42,20 @@ export async function packageHls(
   const scales = renditions.map((r, i) => `[v${i}]scale=-2:${r.height}[v${i}o]`);
   const filter = [split, ...scales].join(";");
 
-  const args = ["-i", source, "-filter_complex", filter];
+  // -hwaccel without an output format leaves decoded frames in system memory,
+  // so the split/scale filter chain below is unaffected by it.
+  const args = [
+    ...(HWACCEL ? ["-hwaccel", HWACCEL] : []),
+    "-i", source,
+    "-filter_complex", filter,
+  ];
 
   renditions.forEach((r, i) => {
     args.push(
       "-map", `[v${i}o]`,
-      `-c:v:${i}`, "libx264",
+      `-c:v:${i}`, ENCODER,
       "-profile:v", "main",
-      "-preset", process.env.FFMPEG_PRESET ?? "veryfast",
+      "-preset", PRESET,
       `-b:v:${i}`, r.videoBitrate,
       `-maxrate:v:${i}`, r.videoBitrate,
       `-bufsize:v:${i}`, r.videoBitrate
